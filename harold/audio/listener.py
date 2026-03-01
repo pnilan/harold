@@ -71,17 +71,20 @@ class AudioListener:
                 return
             self._recording = False
 
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+            # Stop the stream inside the lock so the audio callback
+            # can't append more chunks after we snapshot them
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
 
-        if not self._chunks:
-            return
+            if not self._chunks:
+                return
 
-        # Process in a separate thread to not block the key listener
-        chunks = self._chunks
-        self._chunks = []
+            # Snapshot and clear chunks while still holding the lock
+            chunks = self._chunks
+            self._chunks = []
+
         threading.Thread(target=self._process_audio, args=(chunks,), daemon=True).start()
 
     def _process_audio(self, chunks: list[np.ndarray]):
