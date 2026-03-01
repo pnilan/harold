@@ -21,6 +21,8 @@ ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
 ELEVENLABS_SAMPLE_RATE = 24000
 
 # Claude Agent SDK
+# `or None` converts an empty string "" to None (os.environ.get already returns
+# None for missing keys, but HAROLD_DEFAULT_CWD="" should also mean "unset").
 DEFAULT_CWD: str | None = os.environ.get("HAROLD_DEFAULT_CWD") or None
 CLAUDE_MAX_BUDGET_USD: float = 1.00
 SUMMARIZER_MODEL: str = "claude-haiku-4-5-20251001"

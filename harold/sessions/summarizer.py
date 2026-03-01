@@ -5,6 +5,7 @@ for fast, cheap summarization of session activity.
 """
 
 import logging
+import re
 import time
 
 import anthropic
@@ -42,7 +43,8 @@ class Summarizer:
             )
             slug = response.content[0].text.strip().lower()
             # Sanitize: keep only alphanumeric and hyphens
-            slug = "".join(c for c in slug if c.isalnum() or c == "-").strip("-")
+            slug = "".join(c for c in slug if c.isalnum() or c == "-")
+            slug = re.sub(r"-{2,}", "-", slug).strip("-")
             if slug:
                 return slug
         except Exception as e:

@@ -11,8 +11,10 @@ State machine:
 import asyncio
 import enum
 import logging
+import re
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from typing import ClassVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -22,7 +24,10 @@ from claude_agent_sdk import (
     TextBlock,
 )
 from claude_agent_sdk.types import (
+    Message,
+    PermissionResult,
     PermissionResultAllow,
+    PermissionResultDeny,
     ToolPermissionContext,
     ToolUseBlock,
 )
@@ -40,20 +45,39 @@ class SessionState(enum.Enum):
     ERROR = "error"
 
 
-@dataclass
 class Session:
-    name: str
-    prompt: str
-    state: SessionState
-    client: ClaudeSDKClient
-    message_log: list = field(default_factory=list)
-    summary_cursor: int = 0
-    result: ResultMessage | None = None
-    _task: asyncio.Task | None = None
+    """A single Claude Agent SDK session."""
+
+    def __init__(
+        self,
+        name: str,
+        prompt: str,
+        state: SessionState,
+        client: ClaudeSDKClient,
+    ) -> None:
+        self.name = name
+        self.prompt = prompt
+        self.state = state
+        self.client = client
+        self.message_log: list[Message] = []
+        self.summary_cursor: int = 0
+        self.result: ResultMessage | None = None
+        self.task: asyncio.Task | None = None
 
 
 class SessionManager:
     """Manages a single Claude Agent SDK session driven by voice input."""
+
+    _STATUS_COOLDOWN_SECS: ClassVar[float] = 10.0
+
+    # Bash commands/patterns that are never allowed without human review.
+    _DENIED_BASH_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
+        re.compile(r"\brm\s+-[^\s]*r"),       # rm -r / rm -rf
+        re.compile(r"\bgit\s+push\s+--force"), # git push --force
+        re.compile(r"\bgit\s+reset\s+--hard"),
+        re.compile(r"\bsudo\b"),
+        re.compile(r"\bcurl\b.*\|\s*sh"),      # curl | sh
+    ]
 
     def __init__(
         self,
@@ -66,6 +90,7 @@ class SessionManager:
         self._on_ping_error = on_ping_error
         self._session: Session | None = None
         self._summarizer = Summarizer()
+        self._last_status_time: float = 0.0
 
     @property
     def state(self) -> SessionState:
@@ -98,6 +123,8 @@ class SessionManager:
 
         await self._on_speak(f"Starting session: {name}")
 
+        # DEFAULT_CWD is None when HAROLD_DEFAULT_CWD is unset;
+        # the SDK falls back to the process CWD in that case.
         options = ClaudeAgentOptions(
             cwd=DEFAULT_CWD,
             permission_mode="acceptEdits",
@@ -113,7 +140,7 @@ class SessionManager:
             client=client,
         )
         self._session = session
-        session._task = asyncio.create_task(self._run_session(session))
+        session.task = asyncio.create_task(self._run_session(session))
 
     async def _run_session(self, session: Session) -> None:
         """Background task: query the SDK and collect messages until ResultMessage."""
@@ -153,7 +180,16 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     async def _speak_status(self) -> None:
-        """Summarize new activity since last check and speak it."""
+        """Summarize new activity since last check and speak it.
+
+        Enforces a cooldown to prevent stacking API calls on rapid PTT presses.
+        """
+        now = time.monotonic()
+        if now - self._last_status_time < self._STATUS_COOLDOWN_SECS:
+            await self._on_speak("Still working, please wait.")
+            return
+        self._last_status_time = now
+
         session = self._session
         if session is None:
             return
@@ -196,10 +232,10 @@ class SessionManager:
         if session is None:
             return
 
-        if session._task and not session._task.done():
-            session._task.cancel()
+        if session.task and not session.task.done():
+            session.task.cancel()
             try:
-                await session._task
+                await session.task
             except asyncio.CancelledError:
                 pass
 
@@ -216,10 +252,10 @@ class SessionManager:
         # Cancel the task first so it stops iterating, then disconnect.
         # The task's finally block calls disconnect(), but we call it again
         # as a safety net — the SDK guards against double-disconnect.
-        if session._task and not session._task.done():
-            session._task.cancel()
+        if session.task and not session.task.done():
+            session.task.cancel()
             try:
-                await session._task
+                await session.task
             except asyncio.CancelledError:
                 pass
         try:
@@ -232,12 +268,24 @@ class SessionManager:
     # Permission callback
     # ------------------------------------------------------------------
 
-    @staticmethod
+    @classmethod
     async def _can_use_tool(
-        tool_name: str, input_data: dict, context: ToolPermissionContext
-    ) -> PermissionResultAllow:
-        """Allow all tools, log tool use. Hook point for future voice-based approval."""
-        logger.info("Tool requested: %s", tool_name)
+        cls, tool_name: str, input_data: dict, context: ToolPermissionContext
+    ) -> PermissionResult:
+        """Check tool requests against a denylist, log usage.
+
+        Blocks destructive bash patterns (rm -rf, git push --force, sudo, etc.).
+        Hook point for future voice-based approval flow.
+        """
+        logger.info("Tool requested: %s | input: %s", tool_name, input_data)
+
+        if tool_name == "Bash":
+            command = input_data.get("command", "")
+            for pattern in cls._DENIED_BASH_PATTERNS:
+                if pattern.search(command):
+                    logger.warning("Denied tool %s — matched pattern %r: %s", tool_name, pattern.pattern, command)
+                    return PermissionResultDeny(message=f"Command blocked by safety denylist: {pattern.pattern}")
+
         return PermissionResultAllow(updated_input=input_data)
 
 

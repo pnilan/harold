@@ -2,6 +2,9 @@
 
 Run with: uv run python scripts/validate_sdk.py
 
+WARNING: Makes real API calls. Expected cost ~$0.30 total.
+Do not run in CI without a cost-aware gate.
+
 Tests:
   1. Connect + single query
   2. Multi-turn session persistence
