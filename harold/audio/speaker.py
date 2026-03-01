@@ -7,7 +7,7 @@ from harold.config import ELEVENLABS_MODEL_ID, ELEVENLABS_SAMPLE_RATE, ELEVENLAB
 
 class Speaker:
     def __init__(self, voice_id: str = ELEVENLABS_VOICE_ID):
-        self._client = ElevenLabs()  # reads ELEVEN_API_KEY from env
+        self._client = ElevenLabs()
         self._voice_id = voice_id
         self._playing = False
 
