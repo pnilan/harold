@@ -1,6 +1,9 @@
 import asyncio
 
 import janus
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from harold.audio.listener import AudioListener
 from harold.audio.speaker import Speaker
