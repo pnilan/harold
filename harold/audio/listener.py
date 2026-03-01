@@ -39,6 +39,8 @@ class AudioListener:
         )
         print("Loading Silero VAD model...")
         self._vad = load_silero_vad()
+        device_info = sd.query_devices(kind="input")
+        print(f"Microphone: {device_info['name']}")
         print("Audio listener ready.")
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):

@@ -9,6 +9,8 @@ description = "Voice-based Claude Code session router"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "anthropic>=0.52.0",
+    "claude-agent-sdk>=0.1.44",
     "elevenlabs>=2.37.0",
     "faster-whisper>=1.2.1",
     "janus>=2.0.0",
