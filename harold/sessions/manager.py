@@ -1,11 +1,13 @@
-"""Session manager — routes voice input through a single Claude Agent SDK session.
+"""Session manager — multi-session registry for concurrent Claude Agent SDK sessions.
 
-State machine:
-    IDLE ──speak──> spawn session ──> RUNNING
-    RUNNING ──speak──> summarize status ──> RUNNING
-    RUNNING ──ResultMessage──> ping ──> COMPLETED or ERROR
-    COMPLETED ──speak──> summarize result ──> IDLE
-    ERROR ──speak──> summarize error ──> IDLE
+State machine (per session):
+    spawn_session → RUNNING
+    RUNNING + ResultMessage(success) → COMPLETED (disconnect, ping)
+    RUNNING + ResultMessage(error) → ERROR (disconnect, ping)
+    COMPLETED + read_status → speak result, remove from registry
+    ERROR + read_status → speak error, remove from registry
+    RUNNING + read_status → speak progress summary (with debounce)
+    RUNNING + kill_session → cancel task, disconnect, remove from registry
 """
 
 import asyncio
@@ -32,14 +34,13 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
 )
 
-from harold.config import CLAUDE_MAX_BUDGET_USD, DEFAULT_CWD
+from harold.config import CLAUDE_MAX_BUDGET_USD, DEFAULT_CWD, SESSION_MODEL
 from harold.sessions.summarizer import Summarizer
 
 logger = logging.getLogger(__name__)
 
 
 class SessionState(enum.Enum):
-    IDLE = "idle"
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
@@ -66,7 +67,7 @@ class Session:
 
 
 class SessionManager:
-    """Manages a single Claude Agent SDK session driven by voice input."""
+    """Manages multiple concurrent Claude Agent SDK sessions."""
 
     _STATUS_COOLDOWN_SECS: ClassVar[float] = 10.0
 
@@ -88,44 +89,27 @@ class SessionManager:
         self._on_speak = on_speak
         self._on_ping_complete = on_ping_complete
         self._on_ping_error = on_ping_error
-        self._session: Session | None = None
+        self._sessions: dict[str, Session] = {}
         self._summarizer = Summarizer()
-        self._last_status_time: float = 0.0
-
-    @property
-    def state(self) -> SessionState:
-        if self._session is None:
-            return SessionState.IDLE
-        return self._session.state
-
-    async def handle_transcript(self, text: str) -> None:
-        """Single entry point from the main loop. Routes by current state."""
-        state = self.state
-        logger.info("handle_transcript state=%s text=%r", state.value, text[:80])
-
-        if state == SessionState.IDLE:
-            await self._spawn_session(text)
-        elif state == SessionState.RUNNING:
-            await self._speak_status()
-        elif state == SessionState.COMPLETED:
-            await self._speak_final_result()
-        elif state == SessionState.ERROR:
-            await self._speak_error()
+        self._last_status_times: dict[str, float] = {}
 
     # ------------------------------------------------------------------
-    # Session lifecycle
+    # Public API
     # ------------------------------------------------------------------
 
-    async def _spawn_session(self, prompt: str) -> None:
-        """Create a new SDK client, connect, and start a background task."""
+    async def spawn_session(self, prompt: str) -> str:
+        """Create a new SDK session and start it in the background.
+
+        Returns the session name.
+        """
         name = await self._summarizer.generate_session_name(prompt)
+        name = self._deduplicate_name(name)
         logger.info("Spawning session %r for prompt: %s", name, prompt[:100])
 
         await self._on_speak(f"Starting session: {name}")
 
-        # DEFAULT_CWD is None when HAROLD_DEFAULT_CWD is unset;
-        # the SDK falls back to the process CWD in that case.
         options = ClaudeAgentOptions(
+            model=SESSION_MODEL,
             cwd=DEFAULT_CWD,
             permission_mode="acceptEdits",
             can_use_tool=self._can_use_tool,
@@ -139,11 +123,77 @@ class SessionManager:
             state=SessionState.RUNNING,
             client=client,
         )
-        self._session = session
+        self._sessions[name] = session
         session.task = asyncio.create_task(self._run_session(session))
+        return name
+
+    async def read_status(self, name: str) -> None:
+        """Speak the status of a session. Removes terminal sessions after reading."""
+        session = self._resolve_session(name)
+        if session is None:
+            await self._on_speak(f"No session found matching {name}")
+            return
+
+        if session.state == SessionState.RUNNING:
+            await self._speak_progress(session)
+        elif session.state == SessionState.COMPLETED:
+            summary = await self._summarizer.summarize_result(
+                session.name, session.result
+            )
+            await self._on_speak(summary)
+            self._remove_session(session.name)
+        elif session.state == SessionState.ERROR:
+            if session.result:
+                summary = await self._summarizer.summarize_result(
+                    session.name, session.result
+                )
+            else:
+                summary = f"Session {session.name} encountered an error."
+            await self._on_speak(summary)
+            self._remove_session(session.name)
+
+    async def list_sessions(self) -> None:
+        """Speak the name and state of all sessions."""
+        if not self._sessions:
+            await self._on_speak("No active sessions.")
+            return
+
+        parts = [
+            f"{s.name} is {s.state.value}" for s in self._sessions.values()
+        ]
+        await self._on_speak(". ".join(parts) + ".")
+
+    async def kill_session(self, name: str) -> None:
+        """Cancel and remove a session."""
+        session = self._resolve_session(name)
+        if session is None:
+            await self._on_speak(f"No session found matching {name}")
+            return
+
+        await self._cancel_session(session)
+        self._remove_session(session.name)
+        await self._on_speak(f"Session {session.name} killed.")
+
+    def get_session_registry(self) -> list[dict[str, str]]:
+        """Return session names and states for the router system prompt."""
+        return [
+            {"name": s.name, "state": s.state.value}
+            for s in self._sessions.values()
+        ]
+
+    async def shutdown(self) -> None:
+        """Cancel and disconnect ALL sessions. Called on Ctrl+C."""
+        for session in list(self._sessions.values()):
+            logger.info("Shutting down session %s", session.name)
+            await self._cancel_session(session)
+        self._sessions.clear()
+
+    # ------------------------------------------------------------------
+    # Session lifecycle (background task)
+    # ------------------------------------------------------------------
 
     async def _run_session(self, session: Session) -> None:
-        """Background task: query the SDK and collect messages until ResultMessage."""
+        """Background task: connect, query, and collect messages until ResultMessage."""
         try:
             await session.client.connect()
             await session.client.query(session.prompt)
@@ -176,82 +226,75 @@ class SessionManager:
                 pass
 
     # ------------------------------------------------------------------
-    # Summarization callbacks
+    # Status summarization
     # ------------------------------------------------------------------
 
-    async def _speak_status(self) -> None:
-        """Summarize new activity since last check and speak it.
-
-        Enforces a cooldown to prevent stacking API calls on rapid PTT presses.
-        """
+    async def _speak_progress(self, session: Session) -> None:
+        """Summarize new activity since last check, with cooldown."""
         now = time.monotonic()
-        if now - self._last_status_time < self._STATUS_COOLDOWN_SECS:
+        last = self._last_status_times.get(session.name, 0.0)
+        if now - last < self._STATUS_COOLDOWN_SECS:
             await self._on_speak("Still working, please wait.")
             return
-        self._last_status_time = now
+        self._last_status_times[session.name] = now
 
-        session = self._session
-        if session is None:
-            return
-
-        new_messages = session.message_log[session.summary_cursor :]
-        summary = await self._summarizer.summarize_progress(session.name, new_messages)
+        new_messages = session.message_log[session.summary_cursor:]
+        summary = await self._summarizer.summarize_progress(
+            session.name, new_messages
+        )
         session.summary_cursor = len(session.message_log)
         await self._on_speak(summary)
 
-    async def _speak_final_result(self) -> None:
-        """Summarize the completed session result, speak it, and reset to IDLE."""
-        session = self._session
-        if session is None:
-            return
-
-        summary = await self._summarizer.summarize_result(session.name, session.result)
-        await self._on_speak(summary)
-        await self._reset()
-
-    async def _speak_error(self) -> None:
-        """Summarize the session error, speak it, and reset to IDLE."""
-        session = self._session
-        if session is None:
-            return
-
-        if session.result:
-            summary = await self._summarizer.summarize_result(session.name, session.result)
-        else:
-            summary = f"Session {session.name} encountered an error."
-        await self._on_speak(summary)
-        await self._reset()
-
     # ------------------------------------------------------------------
-    # Cleanup
+    # Name resolution
     # ------------------------------------------------------------------
 
-    async def _reset(self) -> None:
-        """Clean up the current session and return to IDLE."""
-        session = self._session
-        if session is None:
-            return
+    def _resolve_session(self, name: str) -> Session | None:
+        """Fuzzy-match a session name.
 
-        if session.task and not session.task.done():
-            session.task.cancel()
-            try:
-                await session.task
-            except asyncio.CancelledError:
-                pass
+        Priority: exact → case-insensitive → unique substring.
+        """
+        # Exact match
+        if name in self._sessions:
+            return self._sessions[name]
 
-        self._session = None
-        logger.info("Session reset — back to IDLE")
+        # Case-insensitive
+        lower = name.lower()
+        for key, session in self._sessions.items():
+            if key.lower() == lower:
+                return session
 
-    async def shutdown(self) -> None:
-        """Interrupt and clean up the active session. Called on Ctrl+C."""
-        session = self._session
-        if session is None:
-            return
+        # Substring (only if exactly one match)
+        matches = [
+            s for key, s in self._sessions.items()
+            if lower in key.lower()
+        ]
+        if len(matches) == 1:
+            return matches[0]
 
-        logger.info("Shutting down session %s", session.name)
-        # Cancel the task first so it stops iterating, then disconnect.
-        # The task's finally block calls disconnect(), but we call it again
-        # as a safety net — the SDK guards against double-disconnect.
+        return None
+
+    def _deduplicate_name(self, name: str) -> str:
+        """Append -2, -3, etc. if the name already exists."""
+        if name not in self._sessions:
+            return name
+        counter = 2
+        while f"{name}-{counter}" in self._sessions:
+            counter += 1
+        return f"{name}-{counter}"
+
+    # ------------------------------------------------------------------
+    # Cleanup helpers
+    # ------------------------------------------------------------------
+
+    def _remove_session(self, name: str) -> None:
+        """Remove a session from the registry and clean up status timers."""
+        self._sessions.pop(name, None)
+        self._last_status_times.pop(name, None)
+        logger.info("Session %s removed from registry", name)
+
+    async def _cancel_session(self, session: Session) -> None:
+        """Cancel a session's background task and disconnect."""
         if session.task and not session.task.done():
             session.task.cancel()
             try:
@@ -262,7 +305,6 @@ class SessionManager:
             await session.client.disconnect()
         except Exception:
             pass
-        self._session = None
 
     # ------------------------------------------------------------------
     # Permission callback
