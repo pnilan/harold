@@ -399,7 +399,7 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "janus", specifier = ">=2.0.0" },
     { name = "numpy", specifier = ">=2.4.2" },
-    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pynput", specifier = ">=1.8.1" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "silero-vad", specifier = ">=6.2.1" },
