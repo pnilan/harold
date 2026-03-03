@@ -1,7 +1,7 @@
 """Stateless Haiku router using forced tool_use for structured output.
 
-Classifies spoken transcripts into one of 4 intents:
-spawn_session, read_status, list_sessions, kill_session.
+Classifies spoken transcripts into one of 5 intents:
+spawn_session, read_status, list_sessions, kill_session, send_input.
 """
 
 import logging
@@ -14,6 +14,7 @@ from harold.router.models import (
     ListSessions,
     ReadStatus,
     RouterOutput,
+    SendInput,
     SpawnSession,
 )
 
@@ -37,6 +38,9 @@ Intent rules:
    assume that one.
 3. list_sessions — User wants to know what sessions are active.
 4. kill_session — User wants to stop/cancel a session.
+5. send_input — User wants to send a follow-up instruction to a session
+   in the "awaiting_input" state. Extract the session name and the
+   follow-up message. If only one session is awaiting_input, assume that one.
 
 When matching session names, use fuzzy matching — the user might say
 "auth refactor" for "auth-refactor" or just "auth" if unambiguous.
@@ -56,6 +60,7 @@ ROUTE_TOOL = {
                     "read_status",
                     "list_sessions",
                     "kill_session",
+                    "send_input",
                 ],
             },
             "prompt": {
@@ -64,7 +69,11 @@ ROUTE_TOOL = {
             },
             "name": {
                 "type": "string",
-                "description": "For read_status, kill_session: the session name.",
+                "description": "For read_status, kill_session, send_input: the session name.",
+            },
+            "message": {
+                "type": "string",
+                "description": "For send_input: the follow-up instruction.",
             },
         },
         "required": ["intent"],
@@ -76,6 +85,7 @@ _INTENT_MODELS: dict[str, type[RouterOutput]] = {
     "read_status": ReadStatus,
     "list_sessions": ListSessions,
     "kill_session": KillSession,
+    "send_input": SendInput,
 }
 
 
@@ -90,7 +100,7 @@ class Router:
         transcript: str,
         session_registry: list[dict[str, str]],
     ) -> RouterOutput | None:
-        """Classify a transcript into one of 4 intents.
+        """Classify a transcript into one of 5 intents.
 
         Returns None on any failure (API error, no tool_use block, parse failure).
         """

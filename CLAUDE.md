@@ -42,12 +42,12 @@ uv run python scripts/validate_sdk.py
 - `ping.py` — Local audio tones for completion/error feedback (no server round-trip)
 
 **Router Agent** (`router/agent.py`)
-- Stateless Claude Haiku API call that classifies user intent (spawn/status/list/kill)
+- Stateless Claude Haiku API call that classifies user intent (spawn/status/list/kill/send_input)
 - Uses forced tool_use for structured output; receives injected session registry
 
 **Session Management** (`sessions/`)
 - `manager.py` — Multi-session registry, each backed by `ClaudeSDKClient` instance
-- Tracks: name (auto-inferred), state (running/completed/error), message log
+- Tracks: name (auto-inferred), state (running/awaiting_input/error), message log
 - Background task consumes `receive_response()` from SDK
 - Transitions to complete/error on `ResultMessage`; triggers priority ping
 - `summarizer.py` — Lightweight Haiku call that summarizes new messages in session log (since last read) for status updates
@@ -81,7 +81,8 @@ The project is organized in phases (tracked as feature branches):
 1. **Phase 1: Audio skeleton** — mic → VAD → whisper → playback (COMPLETE)
 2. **Phase 2: SDK session manager** — Validate ClaudeSDKClient, single session, summarizer, priority pings (COMPLETE)
 3. **Phase 3: Router agent** — Haiku-based intent router (spawn/status/list/kill), multi-session registry, fuzzy name matching (COMPLETE)
-4. **Phase 4+** — send_input intent, project CWD routing, polish, error handling
+4. **Phase 4: Multi-turn sessions** — send_input intent, AWAITING_INPUT state, sessions stay alive between turns (IN PROGRESS)
+5. **Phase 5+** — project CWD routing, polish, error handling
 
 Each phase is merged via PR; check git log for completed phases.
 

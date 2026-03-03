@@ -12,6 +12,8 @@ Tests:
   4. Kill intent — "Kill auth-refactor"
   5. Messy STT — "um start a session to uh fix the login"
   6. Single-session ambiguity — "what's happening?" with one session
+  7. Send input — "Tell auth-refactor to also update the unit tests"
+  8. Single awaiting ambiguity — "now add error handling too" with one awaiting session
 """
 
 import asyncio
@@ -26,7 +28,7 @@ from harold.router.agent import Router
 
 SAMPLE_REGISTRY = [
     {"name": "auth-refactor", "state": "running"},
-    {"name": "fix-tests", "state": "completed"},
+    {"name": "fix-tests", "state": "awaiting_input"},
 ]
 
 SINGLE_SESSION_REGISTRY = [
@@ -114,6 +116,45 @@ async def test_single_session_ambiguity() -> None:
     print("PASS")
 
 
+AWAITING_REGISTRY = [
+    {"name": "auth-refactor", "state": "awaiting_input"},
+    {"name": "fix-tests", "state": "running"},
+]
+
+SINGLE_AWAITING_REGISTRY = [
+    {"name": "auth-refactor", "state": "awaiting_input"},
+]
+
+
+async def test_send_input() -> None:
+    print("\n=== Test 7: Send input intent ===")
+    router = Router()
+    result = await router.classify(
+        "Tell auth-refactor to also update the unit tests",
+        session_registry=AWAITING_REGISTRY,
+    )
+    assert result is not None, "Router returned None"
+    assert result.intent == "send_input", f"Expected send_input, got {result.intent}"
+    assert "auth" in result.name.lower(), f"Expected auth-refactor match, got {result.name!r}"
+    assert result.message, "Expected non-empty message"
+    print(f"  intent={result.intent} name={result.name!r} message={result.message!r}")
+    print("PASS")
+
+
+async def test_single_awaiting_ambiguity() -> None:
+    print("\n=== Test 8: Single awaiting ambiguity → send_input ===")
+    router = Router()
+    result = await router.classify(
+        "now add error handling too",
+        session_registry=SINGLE_AWAITING_REGISTRY,
+    )
+    assert result is not None, "Router returned None"
+    assert result.intent == "send_input", f"Expected send_input, got {result.intent}"
+    assert result.message, "Expected non-empty message"
+    print(f"  intent={result.intent} name={result.name!r} message={result.message!r}")
+    print("PASS")
+
+
 async def run_all() -> None:
     tests = [
         ("spawn", test_spawn),
@@ -122,6 +163,8 @@ async def run_all() -> None:
         ("kill", test_kill),
         ("messy_stt", test_messy_stt),
         ("single_session_ambiguity", test_single_session_ambiguity),
+        ("send_input", test_send_input),
+        ("single_awaiting_ambiguity", test_single_awaiting_ambiguity),
     ]
 
     passed = 0

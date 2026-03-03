@@ -87,6 +87,46 @@ class Summarizer:
             logger.error("Summarize progress failed: %s", e)
             return f"Session {session_name} is running."
 
+    async def summarize_awaiting(self, session_name: str, result) -> str:
+        """Summarize a session that completed its turn and is awaiting follow-up."""
+        if not isinstance(result, ResultMessage):
+            return f"Session {session_name} is awaiting further instructions."
+
+        cost = f"${result.total_cost_usd:.3f}" if result.total_cost_usd else "unknown cost"
+        duration_s = result.duration_ms / 1000
+        result_text = result.result or ""
+
+        detail = (
+            f"Session '{session_name}' completed its latest task in {duration_s:.1f} seconds, "
+            f"costing {cost}, with {result.num_turns} turns. "
+            f"The session is still active and awaiting further instructions. "
+        )
+        if result_text:
+            detail += f"Latest output: {result_text[:500]}"
+
+        try:
+            response = await self._client.messages.create(
+                model=SUMMARIZER_MODEL,
+                max_tokens=150,
+                system=SYSTEM_PROMPT,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Summarize what this session accomplished and note that "
+                            f"it is awaiting further instructions:\n\n{detail}"
+                        ),
+                    }
+                ],
+            )
+            return response.content[0].text.strip()
+        except Exception as e:
+            logger.error("Summarize awaiting failed: %s", e)
+            return (
+                f"Session {session_name} completed its latest task and is "
+                f"awaiting further instructions."
+            )
+
     async def summarize_result(self, session_name: str, result) -> str:
         """Summarize the final result of a completed session."""
         if not isinstance(result, ResultMessage):
