@@ -80,7 +80,7 @@ The project is organized in phases (tracked as feature branches):
 
 1. **Phase 1: Audio skeleton** — mic → VAD → whisper → playback (COMPLETE)
 2. **Phase 2: SDK session manager** — Validate ClaudeSDKClient, single session, summarizer, priority pings (COMPLETE)
-3. **Phase 3: Router agent** — Haiku-based intent router (spawn/status/list/kill), multi-session registry, fuzzy name matching (IN PROGRESS)
+3. **Phase 3: Router agent** — Haiku-based intent router (spawn/status/list/kill), multi-session registry, fuzzy name matching (COMPLETE)
 4. **Phase 4+** — send_input intent, project CWD routing, polish, error handling
 
 Each phase is merged via PR; check git log for completed phases.

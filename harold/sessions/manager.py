@@ -64,12 +64,14 @@ class Session:
         self.summary_cursor: int = 0
         self.result: ResultMessage | None = None
         self.task: asyncio.Task | None = None
+        self.completed_at: float | None = None
 
 
 class SessionManager:
     """Manages multiple concurrent Claude Agent SDK sessions."""
 
     _STATUS_COOLDOWN_SECS: ClassVar[float] = 10.0
+    _STALE_SESSION_TTL_SECS: ClassVar[float] = 300.0  # 5 minutes
 
     # Bash commands/patterns that are never allowed without human review.
     _DENIED_BASH_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
@@ -102,6 +104,7 @@ class SessionManager:
 
         Returns the session name.
         """
+        self._reap_stale_sessions()
         name = await self._summarizer.generate_session_name(prompt)
         name = self._deduplicate_name(name)
         logger.info("Spawning session %r for prompt: %s", name, prompt[:100])
@@ -176,6 +179,7 @@ class SessionManager:
 
     def get_session_registry(self) -> list[dict[str, str]]:
         """Return session names and states for the router system prompt."""
+        self._reap_stale_sessions()
         return [
             {"name": s.name, "state": s.state.value}
             for s in self._sessions.values()
@@ -206,10 +210,12 @@ class SessionManager:
                     session.result = msg
                     if msg.is_error:
                         session.state = SessionState.ERROR
+                        session.completed_at = time.monotonic()
                         logger.warning("Session %s errored: %s", session.name, msg.subtype)
                         await self._on_ping_error()
                     else:
                         session.state = SessionState.COMPLETED
+                        session.completed_at = time.monotonic()
                         logger.info("Session %s completed: %s", session.name, msg.subtype)
                         await self._on_ping_complete()
 
@@ -218,6 +224,7 @@ class SessionManager:
         except Exception:
             logger.exception("Session %s crashed", session.name)
             session.state = SessionState.ERROR
+            session.completed_at = time.monotonic()
             await self._on_ping_error()
         finally:
             try:
@@ -292,6 +299,20 @@ class SessionManager:
         self._sessions.pop(name, None)
         self._last_status_times.pop(name, None)
         logger.info("Session %s removed from registry", name)
+
+    def _reap_stale_sessions(self) -> None:
+        """Remove terminal sessions that have been unread for too long."""
+        now = time.monotonic()
+        stale = [
+            name
+            for name, s in self._sessions.items()
+            if s.state in (SessionState.COMPLETED, SessionState.ERROR)
+            and s.completed_at is not None
+            and now - s.completed_at > self._STALE_SESSION_TTL_SECS
+        ]
+        for name in stale:
+            logger.info("Reaping stale session %s", name)
+            self._remove_session(name)
 
     async def _cancel_session(self, session: Session) -> None:
         """Cancel a session's background task and disconnect."""
