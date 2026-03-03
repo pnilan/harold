@@ -27,8 +27,8 @@ TTS_GAIN: float = float(os.environ.get("HAROLD_TTS_GAIN", "0.5"))
 # None for missing keys, but HAROLD_DEFAULT_CWD="" should also mean "unset").
 DEFAULT_CWD: str | None = os.environ.get("HAROLD_DEFAULT_CWD") or None
 CLAUDE_MAX_BUDGET_USD: float = 1.00
-SUMMARIZER_MODEL: str = "claude-haiku-4-5-20251001"
-ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
+SUMMARIZER_MODEL: str = os.environ.get("HAROLD_SUMMARIZER_MODEL") or "claude-haiku-4-5-20251001"
+ROUTER_MODEL: str = os.environ.get("HAROLD_ROUTER_MODEL") or "claude-haiku-4-5-20251001"
 SESSION_MODEL: str = os.environ.get("HAROLD_SESSION_MODEL") or "claude-sonnet-4-20250514"
 LOG_LEVEL: str = os.environ.get("HAROLD_LOG_LEVEL", "INFO")
 
