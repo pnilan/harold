@@ -220,9 +220,8 @@ class SessionManager:
         self._remove_session(session.name)
         await self._on_speak(f"Session {session.name} killed.")
 
-    async def get_session_registry(self) -> list[dict[str, str]]:
+    def get_session_registry(self) -> list[dict[str, str]]:
         """Return session names and states for the router system prompt."""
-        await self._reap_stale_sessions()
         return [
             {"name": s.name, "state": s.state.value}
             for s in self._sessions.values()
@@ -287,6 +286,11 @@ class SessionManager:
                     session.idle_since = time.monotonic()
                     logger.info("Session %s turn complete, awaiting input: %s", session.name, msg.subtype)
                     await self._on_ping_complete()
+                return
+
+        # SDK iterator ended without yielding a ResultMessage
+        if session.state == SessionState.RUNNING:
+            logger.warning("Session %s: receive_response ended without ResultMessage", session.name)
 
     # ------------------------------------------------------------------
     # Status summarization

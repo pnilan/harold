@@ -99,7 +99,7 @@ async def main():
             print(f"\n> {transcript}")
 
             # 1. Classify
-            registry = await session_mgr.get_session_registry()
+            registry = session_mgr.get_session_registry()
             action = await router.classify(transcript, registry)
 
             # 2. Fallback if router fails

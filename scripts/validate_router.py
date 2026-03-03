@@ -14,6 +14,7 @@ Tests:
   6. Single-session ambiguity — "what's happening?" with one session
   7. Send input — "Tell auth-refactor to also update the unit tests"
   8. Single awaiting ambiguity — "now add error handling too" with one awaiting session
+  9. Status on awaiting session — "What's the status of auth-refactor?" with awaiting session
 """
 
 import asyncio
@@ -155,6 +156,20 @@ async def test_single_awaiting_ambiguity() -> None:
     print("PASS")
 
 
+async def test_status_on_awaiting() -> None:
+    print("\n=== Test 9: Status on awaiting session → read_status ===")
+    router = Router()
+    result = await router.classify(
+        "What's the status of auth-refactor?",
+        session_registry=SINGLE_AWAITING_REGISTRY,
+    )
+    assert result is not None, "Router returned None"
+    assert result.intent == "read_status", f"Expected read_status, got {result.intent}"
+    assert "auth" in result.name.lower(), f"Expected auth-refactor match, got {result.name!r}"
+    print(f"  intent={result.intent} name={result.name!r}")
+    print("PASS")
+
+
 async def run_all() -> None:
     tests = [
         ("spawn", test_spawn),
@@ -165,6 +180,7 @@ async def run_all() -> None:
         ("single_session_ambiguity", test_single_session_ambiguity),
         ("send_input", test_send_input),
         ("single_awaiting_ambiguity", test_single_awaiting_ambiguity),
+        ("status_on_awaiting", test_status_on_awaiting),
     ]
 
     passed = 0
