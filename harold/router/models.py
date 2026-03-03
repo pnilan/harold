@@ -24,4 +24,10 @@ class KillSession(BaseModel):
     name: str
 
 
-RouterOutput = SpawnSession | ReadStatus | ListSessions | KillSession
+class SendInput(BaseModel):
+    intent: Literal["send_input"]
+    name: str
+    message: str
+
+
+RouterOutput = SpawnSession | ReadStatus | ListSessions | KillSession | SendInput

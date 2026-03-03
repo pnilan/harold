@@ -87,21 +87,58 @@ class Summarizer:
             logger.error("Summarize progress failed: %s", e)
             return f"Session {session_name} is running."
 
+    async def summarize_awaiting(self, session_name: str, result) -> str:
+        """Summarize a session that completed its turn and is awaiting follow-up."""
+        if not isinstance(result, ResultMessage):
+            return f"Session {session_name} is awaiting further instructions."
+
+        return await self._summarize_result_impl(
+            session_name,
+            result,
+            status_line=f"The session is still active and awaiting further instructions. ",
+            output_label="Latest output",
+            prompt="Summarize what this session accomplished and note that "
+                   "it is awaiting further instructions:",
+            fallback=f"Session {session_name} completed its latest task and is "
+                     f"awaiting further instructions.",
+        )
+
     async def summarize_result(self, session_name: str, result) -> str:
         """Summarize the final result of a completed session."""
         if not isinstance(result, ResultMessage):
             return f"Session {session_name} finished."
 
+        return await self._summarize_result_impl(
+            session_name,
+            result,
+            status_line="",
+            output_label="Final output",
+            prompt="Summarize this session result:",
+            fallback=None,
+        )
+
+    async def _summarize_result_impl(
+        self,
+        session_name: str,
+        result: ResultMessage,
+        *,
+        status_line: str,
+        output_label: str,
+        prompt: str,
+        fallback: str | None,
+    ) -> str:
+        """Shared implementation for summarize_awaiting and summarize_result."""
         cost = f"${result.total_cost_usd:.3f}" if result.total_cost_usd else "unknown cost"
         duration_s = result.duration_ms / 1000
         result_text = result.result or ""
 
         detail = (
-            f"Session '{session_name}' finished in {duration_s:.1f} seconds, "
+            f"Session '{session_name}' completed in {duration_s:.1f} seconds, "
             f"costing {cost}, with {result.num_turns} turns. "
+            f"{status_line}"
         )
         if result_text:
-            detail += f"Final output: {result_text[:500]}"
+            detail += f"{output_label}: {result_text[:500]}"
 
         try:
             response = await self._client.messages.create(
@@ -111,13 +148,15 @@ class Summarizer:
                 messages=[
                     {
                         "role": "user",
-                        "content": f"Summarize this session result:\n\n{detail}",
+                        "content": f"{prompt}\n\n{detail}",
                     }
                 ],
             )
             return response.content[0].text.strip()
         except Exception as e:
-            logger.error("Summarize result failed: %s", e)
+            logger.error("Summarize failed for %s: %s", session_name, e)
+            if fallback:
+                return fallback
             return (
                 f"Session {session_name} completed in {duration_s:.1f} seconds "
                 f"at {cost}."

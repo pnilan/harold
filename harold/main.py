@@ -15,6 +15,7 @@ from harold.router.models import (
     KillSession,
     ListSessions,
     ReadStatus,
+    SendInput,
     SpawnSession,
 )
 from harold.sessions.manager import SessionManager
@@ -22,17 +23,30 @@ from harold.sessions.manager import SessionManager
 
 def _fallback(
     transcript: str, registry: list[dict[str, str]]
-) -> SpawnSession | ReadStatus | None:
+) -> SpawnSession | ReadStatus | SendInput | None:
     """Best-effort fallback when the router API call fails.
 
-    Mirrors Phase 2 behaviour: no sessions → spawn, one running → status.
+    Mirrors Phase 2 behaviour with send_input support:
+    - No sessions → spawn
+    - 1 running, 0 awaiting → status
+    - 0 running, 1 awaiting → send transcript as follow-up
+    - Ambiguous (mixed states, multiple running/awaiting, all-error) → None
     """
     if not registry:
         return SpawnSession(intent="spawn_session", prompt=transcript)
 
     running = [s for s in registry if s["state"] == "running"]
-    if len(running) == 1:
+    awaiting = [s for s in registry if s["state"] == "awaiting_input"]
+
+    if len(running) == 1 and not awaiting:
         return ReadStatus(intent="read_status", name=running[0]["name"])
+
+    if len(awaiting) == 1 and not running:
+        return SendInput(
+            intent="send_input",
+            name=awaiting[0]["name"],
+            message=transcript,
+        )
 
     return None
 
@@ -109,6 +123,8 @@ async def main():
                     await session_mgr.list_sessions()
                 case KillSession():
                     await session_mgr.kill_session(action.name)
+                case SendInput():
+                    await session_mgr.send_input(action.name, action.message)
 
     except asyncio.CancelledError:
         pass

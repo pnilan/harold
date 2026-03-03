@@ -2,12 +2,13 @@
 
 State machine (per session):
     spawn_session → RUNNING
-    RUNNING + ResultMessage(success) → COMPLETED (disconnect, ping)
+    RUNNING + ResultMessage(success) → AWAITING_INPUT (keep connected, ping)
     RUNNING + ResultMessage(error) → ERROR (disconnect, ping)
-    COMPLETED + read_status → speak result, remove from registry
-    ERROR + read_status → speak error, remove from registry
-    RUNNING + read_status → speak progress summary (with debounce)
-    RUNNING + kill_session → cancel task, disconnect, remove from registry
+    AWAITING_INPUT + send_input → RUNNING (new query, new bg task)
+    AWAITING_INPUT + read_status → speak awaiting summary (keep alive)
+    AWAITING_INPUT + kill_session → disconnect, remove
+    AWAITING_INPUT + stale timeout → disconnect, remove
+    ERROR + read_status → speak error, remove
 """
 
 import asyncio
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 class SessionState(enum.Enum):
     RUNNING = "running"
-    COMPLETED = "completed"
+    AWAITING_INPUT = "awaiting_input"
     ERROR = "error"
 
 
@@ -64,7 +65,7 @@ class Session:
         self.summary_cursor: int = 0
         self.result: ResultMessage | None = None
         self.task: asyncio.Task | None = None
-        self.completed_at: float | None = None
+        self.idle_since: float | None = None
 
 
 class SessionManager:
@@ -104,7 +105,7 @@ class SessionManager:
 
         Returns the session name.
         """
-        self._reap_stale_sessions()
+        await self._reap_stale_sessions()
         name = await self._summarizer.generate_session_name(prompt)
         name = self._deduplicate_name(name)
         logger.info("Spawning session %r for prompt: %s", name, prompt[:100])
@@ -130,8 +131,44 @@ class SessionManager:
         session.task = asyncio.create_task(self._run_session(session))
         return name
 
+    async def send_input(self, name: str, message: str) -> None:
+        """Send a follow-up message to a session in AWAITING_INPUT state."""
+        session = self._resolve_session(name)
+        if session is None:
+            await self._on_speak(f"No session found matching {name}")
+            return
+
+        if session.state != SessionState.AWAITING_INPUT:
+            await self._on_speak(
+                f"Session {session.name} is not awaiting input. "
+                f"It is currently {session.state.value}."
+            )
+            return
+
+        # Defensive: cancel lingering task if somehow still alive
+        if session.task and not session.task.done():
+            logger.warning(
+                "Session %s has a lingering task despite AWAITING_INPUT; cancelling",
+                session.name,
+            )
+            session.task.cancel()
+            try:
+                await session.task
+            except asyncio.CancelledError:
+                pass
+
+        session.state = SessionState.RUNNING
+        session.idle_since = None
+        session.summary_cursor = len(session.message_log)
+        logger.info("Sending follow-up to session %s: %s", session.name, message[:100])
+        await self._on_speak(f"Sending input to {session.name}")
+
+        session.task = asyncio.create_task(
+            self._run_followup(session, message)
+        )
+
     async def read_status(self, name: str) -> None:
-        """Speak the status of a session. Removes terminal sessions after reading."""
+        """Speak the status of a session."""
         session = self._resolve_session(name)
         if session is None:
             await self._on_speak(f"No session found matching {name}")
@@ -139,12 +176,12 @@ class SessionManager:
 
         if session.state == SessionState.RUNNING:
             await self._speak_progress(session)
-        elif session.state == SessionState.COMPLETED:
-            summary = await self._summarizer.summarize_result(
+        elif session.state == SessionState.AWAITING_INPUT:
+            summary = await self._summarizer.summarize_awaiting(
                 session.name, session.result
             )
             await self._on_speak(summary)
-            self._remove_session(session.name)
+            # Do NOT remove — session stays alive for potential follow-up
         elif session.state == SessionState.ERROR:
             if session.result:
                 summary = await self._summarizer.summarize_result(
@@ -161,8 +198,14 @@ class SessionManager:
             await self._on_speak("No active sessions.")
             return
 
+        state_labels = {
+            SessionState.RUNNING: "running",
+            SessionState.AWAITING_INPUT: "awaiting input",
+            SessionState.ERROR: "errored",
+        }
         parts = [
-            f"{s.name} is {s.state.value}" for s in self._sessions.values()
+            f"{s.name} is {state_labels.get(s.state, s.state.value)}"
+            for s in self._sessions.values()
         ]
         await self._on_speak(". ".join(parts) + ".")
 
@@ -179,7 +222,6 @@ class SessionManager:
 
     def get_session_registry(self) -> list[dict[str, str]]:
         """Return session names and states for the router system prompt."""
-        self._reap_stale_sessions()
         return [
             {"name": s.name, "state": s.state.value}
             for s in self._sessions.values()
@@ -193,44 +235,62 @@ class SessionManager:
         self._sessions.clear()
 
     # ------------------------------------------------------------------
-    # Session lifecycle (background task)
+    # Session lifecycle (background tasks)
     # ------------------------------------------------------------------
 
     async def _run_session(self, session: Session) -> None:
-        """Background task: connect, query, and collect messages until ResultMessage."""
+        """Background task: connect, query, and consume the first turn."""
         try:
             await session.client.connect()
             await session.client.query(session.prompt)
-
-            async for msg in session.client.receive_response():
-                session.message_log.append(msg)
-                _log_sdk_message(msg)
-
-                if isinstance(msg, ResultMessage):
-                    session.result = msg
-                    if msg.is_error:
-                        session.state = SessionState.ERROR
-                        session.completed_at = time.monotonic()
-                        logger.warning("Session %s errored: %s", session.name, msg.subtype)
-                        await self._on_ping_error()
-                    else:
-                        session.state = SessionState.COMPLETED
-                        session.completed_at = time.monotonic()
-                        logger.info("Session %s completed: %s", session.name, msg.subtype)
-                        await self._on_ping_complete()
-
+            await self._consume_turn(session)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Session %s crashed", session.name)
             session.state = SessionState.ERROR
-            session.completed_at = time.monotonic()
+            session.idle_since = time.monotonic()
             await self._on_ping_error()
-        finally:
-            try:
-                await session.client.disconnect()
-            except Exception:
-                pass
+            await self._disconnect_quiet(session)
+
+    async def _run_followup(self, session: Session, message: str) -> None:
+        """Background task: send a follow-up query and consume the turn."""
+        try:
+            await session.client.query(message)
+            await self._consume_turn(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Session %s follow-up crashed", session.name)
+            session.state = SessionState.ERROR
+            session.idle_since = time.monotonic()
+            await self._on_ping_error()
+            await self._disconnect_quiet(session)
+
+    async def _consume_turn(self, session: Session) -> None:
+        """Consume SDK messages until ResultMessage. Transitions state accordingly."""
+        async for msg in session.client.receive_response():
+            session.message_log.append(msg)
+            _log_sdk_message(msg)
+
+            if isinstance(msg, ResultMessage):
+                session.result = msg
+                if msg.is_error:
+                    session.state = SessionState.ERROR
+                    session.idle_since = time.monotonic()
+                    logger.warning("Session %s errored: %s", session.name, msg.subtype)
+                    await self._on_ping_error()
+                    await self._disconnect_quiet(session)
+                else:
+                    session.state = SessionState.AWAITING_INPUT
+                    session.idle_since = time.monotonic()
+                    logger.info("Session %s turn complete, awaiting input: %s", session.name, msg.subtype)
+                    await self._on_ping_complete()
+                return
+
+        # SDK iterator ended without yielding a ResultMessage
+        if session.state == SessionState.RUNNING:
+            logger.warning("Session %s: receive_response ended without ResultMessage", session.name)
 
     # ------------------------------------------------------------------
     # Status summarization
@@ -300,19 +360,33 @@ class SessionManager:
         self._last_status_times.pop(name, None)
         logger.info("Session %s removed from registry", name)
 
-    def _reap_stale_sessions(self) -> None:
-        """Remove terminal sessions that have been unread for too long."""
+    async def _reap_stale_sessions(self) -> None:
+        """Remove sessions that have been idle for too long.
+
+        AWAITING_INPUT sessions still have a live SDK connection and must
+        be disconnected before removal.
+        """
         now = time.monotonic()
         stale = [
             name
             for name, s in self._sessions.items()
-            if s.state in (SessionState.COMPLETED, SessionState.ERROR)
-            and s.completed_at is not None
-            and now - s.completed_at > self._STALE_SESSION_TTL_SECS
+            if s.state in (SessionState.AWAITING_INPUT, SessionState.ERROR)
+            and s.idle_since is not None
+            and now - s.idle_since > self._STALE_SESSION_TTL_SECS
         ]
         for name in stale:
-            logger.info("Reaping stale session %s", name)
+            session = self._sessions[name]
+            logger.info("Reaping stale session %s (state=%s)", name, session.state.value)
+            if session.state == SessionState.AWAITING_INPUT:
+                await self._disconnect_quiet(session)
             self._remove_session(name)
+
+    async def _disconnect_quiet(self, session: Session) -> None:
+        """Disconnect a session's client, suppressing errors."""
+        try:
+            await session.client.disconnect()
+        except Exception:
+            pass
 
     async def _cancel_session(self, session: Session) -> None:
         """Cancel a session's background task and disconnect."""
@@ -322,10 +396,7 @@ class SessionManager:
                 await session.task
             except asyncio.CancelledError:
                 pass
-        try:
-            await session.client.disconnect()
-        except Exception:
-            pass
+        await self._disconnect_quiet(session)
 
     # ------------------------------------------------------------------
     # Permission callback
