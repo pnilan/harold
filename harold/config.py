@@ -16,9 +16,11 @@ WHISPER_DEVICE = "cpu"
 WHISPER_COMPUTE_TYPE = "int8"
 
 # ElevenLabs
-ELEVENLABS_VOICE_ID = "JJQDkHrp6uKU5Vk0WKhY"
-ELEVENLABS_MODEL_ID = "eleven_flash_v2_5"
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID") or "JJQDkHrp6uKU5Vk0WKhY"
+ELEVENLABS_MODEL_ID = os.environ.get("ELEVENLABS_MODEL_ID") or "eleven_flash_v2_5"
 ELEVENLABS_SAMPLE_RATE = 24000
+ELEVENLABS_SPEAKER_BOOST = False
+TTS_GAIN: float = float(os.environ.get("HAROLD_TTS_GAIN", "0.5"))
 
 # Claude Agent SDK
 # `or None` converts an empty string "" to None (os.environ.get already returns
