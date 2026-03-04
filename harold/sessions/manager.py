@@ -36,7 +36,7 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
 )
 
-from harold.config import CLAUDE_MAX_BUDGET_USD, DEFAULT_CWD, PROJECT_PATHS, SESSION_MODEL
+from harold.config import CLAUDE_MAX_BUDGET_USD, SESSION_MODEL
 from harold.sessions.summarizer import Summarizer
 
 logger = logging.getLogger(__name__)
@@ -89,10 +89,15 @@ class SessionManager:
         on_speak: Callable[[str], Awaitable[None]],
         on_ping_complete: Callable[[], Awaitable[None]],
         on_ping_error: Callable[[], Awaitable[None]],
+        *,
+        project_paths: dict[str, str] | None = None,
+        default_cwd: str | None = None,
     ) -> None:
         self._on_speak = on_speak
         self._on_ping_complete = on_ping_complete
         self._on_ping_error = on_ping_error
+        self._project_paths = project_paths or {}
+        self._default_cwd = default_cwd
         self._sessions: dict[str, Session] = {}
         self._summarizer = Summarizer()
         self._last_status_times: dict[str, float] = {}
@@ -113,7 +118,9 @@ class SessionManager:
 
         await self._on_speak(f"Starting session: {name}")
 
-        cwd = self._resolve_cwd(project)
+        cwd, cwd_warning = self._resolve_cwd(project)
+        if cwd_warning:
+            await self._on_speak(cwd_warning)
 
         options = ClaudeAgentOptions(
             model=SESSION_MODEL,
@@ -222,6 +229,11 @@ class SessionManager:
         await self._cancel_session(session)
         self._remove_session(session.name)
         await self._on_speak(f"Session {session.name} killed.")
+
+    @property
+    def project_names(self) -> list[str]:
+        """Return configured project names for the router."""
+        return list(self._project_paths.keys())
 
     def get_session_registry(self) -> list[dict[str, str]]:
         """Return session names and states for the router system prompt."""
@@ -357,27 +369,36 @@ class SessionManager:
     # CWD resolution
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _resolve_cwd(project: str | None) -> str | None:
+    def _resolve_cwd(self, project: str | None) -> tuple[str | None, str | None]:
         """Resolve the working directory for a new session.
 
-        Priority: project path → DEFAULT_CWD → None (SDK uses process CWD).
+        Priority: project path → default_cwd → None (SDK uses process CWD).
         Validates that paths still exist at spawn time.
+
+        Returns (cwd, spoken_warning) — spoken_warning is a message to speak
+        to the user if the requested project path is no longer accessible.
         """
         if project:
-            path = PROJECT_PATHS.get(project.lower())
+            path = self._project_paths.get(project.lower())
             if path and os.path.isdir(path):
                 logger.info("Resolved project %r to CWD: %s", project, path)
-                return path
-            logger.warning(
-                "Project %r not found or path invalid; falling back to DEFAULT_CWD",
-                project,
-            )
+                return path, None
+            if path:
+                # Path was configured but no longer exists on disk
+                logger.warning("Project %r path no longer accessible: %s", project, path)
+                return self._fallback_cwd(), (
+                    f"Warning: project {project}'s path is no longer accessible. "
+                    f"Using default directory."
+                )
+            logger.warning("Project %r not found in configured paths", project)
 
-        if DEFAULT_CWD and os.path.isdir(DEFAULT_CWD):
-            logger.info("Using DEFAULT_CWD: %s", DEFAULT_CWD)
-            return DEFAULT_CWD
+        return self._fallback_cwd(), None
 
+    def _fallback_cwd(self) -> str | None:
+        """Return default_cwd if valid, otherwise None."""
+        if self._default_cwd and os.path.isdir(self._default_cwd):
+            logger.info("Using default CWD: %s", self._default_cwd)
+            return self._default_cwd
         logger.info("No valid CWD resolved; SDK will use process CWD")
         return None
 

@@ -9,7 +9,7 @@ load_dotenv()
 from harold.audio.listener import AudioListener
 from harold.audio.ping import play_complete_ping, play_error_ping
 from harold.audio.speaker import Speaker
-from harold.config import LOG_LEVEL, PROJECT_PATHS
+from harold.config import DEFAULT_CWD, LOG_LEVEL, PROJECT_PATHS
 from harold.router import Router
 from harold.router.models import (
     KillSession,
@@ -79,6 +79,8 @@ async def main():
         on_speak=on_speak,
         on_ping_complete=on_ping_complete,
         on_ping_error=on_ping_error,
+        project_paths=PROJECT_PATHS,
+        default_cwd=DEFAULT_CWD,
     )
     router = Router()
 
@@ -106,7 +108,7 @@ async def main():
             action = await router.classify(
                 transcript,
                 registry,
-                project_names=list(PROJECT_PATHS.keys()) if PROJECT_PATHS else None,
+                project_names=session_mgr.project_names or None,
             )
 
             # 2. Fallback if router fails

@@ -6,8 +6,6 @@ from elevenlabs.client import ElevenLabs
 from elevenlabs.types import VoiceSettings
 
 from harold.audio._lock import playback_lock
-
-logger = logging.getLogger(__name__)
 from harold.config import (
     ELEVENLABS_MODEL_ID,
     ELEVENLABS_SAMPLE_RATE,
@@ -15,6 +13,8 @@ from harold.config import (
     ELEVENLABS_VOICE_ID,
     TTS_GAIN,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Speaker:
@@ -57,6 +57,8 @@ class Speaker:
             self._playing = False
 
     def stop(self):
-        with playback_lock:
-            sd.stop()
-            self._playing = False
+        # No lock here intentionally — sd.stop() is thread-safe and must be
+        # able to interrupt a playing sound without waiting for the lock
+        # (which is held for the entire duration of playback).
+        sd.stop()
+        self._playing = False

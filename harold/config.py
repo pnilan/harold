@@ -34,6 +34,8 @@ SUMMARIZER_MODEL: str = os.environ.get("HAROLD_SUMMARIZER_MODEL") or "claude-hai
 ROUTER_MODEL: str = os.environ.get("HAROLD_ROUTER_MODEL") or "claude-haiku-4-5-20251001"
 SESSION_MODEL: str = os.environ.get("HAROLD_SESSION_MODEL") or "claude-sonnet-4-20250514"
 LOG_LEVEL: str = os.environ.get("HAROLD_LOG_LEVEL", "INFO")
+ROUTER_MAX_RETRIES: int = int(os.environ.get("HAROLD_ROUTER_MAX_RETRIES", "2"))
+SUMMARIZER_MAX_RETRIES: int = int(os.environ.get("HAROLD_SUMMARIZER_MAX_RETRIES", "3"))
 
 
 def _parse_project_paths() -> dict[str, str]:
@@ -43,6 +45,9 @@ def _parse_project_paths() -> dict[str, str]:
     Example: HAROLD_PROJECT_PATHS=harold=/Users/me/harold,webapp=/Users/me/webapp
 
     Keys are normalized to lowercase. Invalid paths are skipped with a warning.
+
+    Limitation: paths containing commas or names containing '=' are not supported.
+    Use a config file if you need those characters in paths.
     """
     raw = os.environ.get("HAROLD_PROJECT_PATHS", "").strip()
     if not raw:

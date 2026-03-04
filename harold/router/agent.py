@@ -8,7 +8,7 @@ import logging
 
 import anthropic
 
-from harold.config import ROUTER_MODEL
+from harold.config import ROUTER_MAX_RETRIES, ROUTER_MODEL
 from harold.router.models import (
     KillSession,
     ListSessions,
@@ -102,9 +102,7 @@ class Router:
     """Classifies voice transcripts into structured intents via Haiku."""
 
     def __init__(self) -> None:
-        # SDK default max_retries=2 is intentionally kept for the router
-        # (hot path — worst-case ~1.5s backoff).
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(max_retries=ROUTER_MAX_RETRIES)
 
     async def classify(
         self,
@@ -129,7 +127,7 @@ class Router:
                 f"  - {name}" for name in project_names
             )
         else:
-            project_list = "Known projects:\n  (none configured)"
+            project_list = ""
 
         system_prompt = SYSTEM_TEMPLATE.format(
             session_list=session_list,
