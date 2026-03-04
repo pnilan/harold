@@ -15,6 +15,8 @@ Tests:
   7. Send input — "Tell auth-refactor to also update the unit tests"
   8. Single awaiting ambiguity — "now add error handling too" with one awaiting session
   9. Status on awaiting session — "What's the status of auth-refactor?" with awaiting session
+ 10. Spawn with project — "Fix the config parser in the harold project"
+ 11. Spawn without project — "Fix the auth bug in the login module" (no match)
 """
 
 import asyncio
@@ -170,6 +172,36 @@ async def test_status_on_awaiting() -> None:
     print("PASS")
 
 
+async def test_spawn_with_project() -> None:
+    print("\n=== Test 10: Spawn with project name ===")
+    router = Router()
+    result = await router.classify(
+        "Fix the config parser in the harold project",
+        session_registry=[],
+        project_names=["harold", "webapp"],
+    )
+    assert result is not None, "Router returned None"
+    assert result.intent == "spawn_session", f"Expected spawn_session, got {result.intent}"
+    assert result.project == "harold", f"Expected project='harold', got {result.project!r}"
+    print(f"  intent={result.intent} prompt={result.prompt!r} project={result.project!r}")
+    print("PASS")
+
+
+async def test_spawn_without_project() -> None:
+    print("\n=== Test 11: Spawn without matching project ===")
+    router = Router()
+    result = await router.classify(
+        "Fix the auth bug in the login module",
+        session_registry=[],
+        project_names=["harold", "webapp"],
+    )
+    assert result is not None, "Router returned None"
+    assert result.intent == "spawn_session", f"Expected spawn_session, got {result.intent}"
+    assert result.project is None, f"Expected project=None, got {result.project!r}"
+    print(f"  intent={result.intent} prompt={result.prompt!r} project={result.project!r}")
+    print("PASS")
+
+
 async def run_all() -> None:
     tests = [
         ("spawn", test_spawn),
@@ -181,6 +213,8 @@ async def run_all() -> None:
         ("send_input", test_send_input),
         ("single_awaiting_ambiguity", test_single_awaiting_ambiguity),
         ("status_on_awaiting", test_status_on_awaiting),
+        ("spawn_with_project", test_spawn_with_project),
+        ("spawn_without_project", test_spawn_without_project),
     ]
 
     passed = 0

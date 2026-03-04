@@ -14,6 +14,7 @@ State machine (per session):
 import asyncio
 import enum
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -35,7 +36,7 @@ from claude_agent_sdk.types import (
     ToolUseBlock,
 )
 
-from harold.config import CLAUDE_MAX_BUDGET_USD, DEFAULT_CWD, SESSION_MODEL
+from harold.config import CLAUDE_MAX_BUDGET_USD, DEFAULT_CWD, PROJECT_PATHS, SESSION_MODEL
 from harold.sessions.summarizer import Summarizer
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class SessionManager:
     # Public API
     # ------------------------------------------------------------------
 
-    async def spawn_session(self, prompt: str) -> str:
+    async def spawn_session(self, prompt: str, project: str | None = None) -> str:
         """Create a new SDK session and start it in the background.
 
         Returns the session name.
@@ -112,9 +113,11 @@ class SessionManager:
 
         await self._on_speak(f"Starting session: {name}")
 
+        cwd = self._resolve_cwd(project)
+
         options = ClaudeAgentOptions(
             model=SESSION_MODEL,
-            cwd=DEFAULT_CWD,
+            cwd=cwd,
             permission_mode="acceptEdits",
             can_use_tool=self._can_use_tool,
             max_budget_usd=CLAUDE_MAX_BUDGET_USD,
@@ -349,6 +352,34 @@ class SessionManager:
         while f"{name}-{counter}" in self._sessions:
             counter += 1
         return f"{name}-{counter}"
+
+    # ------------------------------------------------------------------
+    # CWD resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_cwd(project: str | None) -> str | None:
+        """Resolve the working directory for a new session.
+
+        Priority: project path → DEFAULT_CWD → None (SDK uses process CWD).
+        Validates that paths still exist at spawn time.
+        """
+        if project:
+            path = PROJECT_PATHS.get(project.lower())
+            if path and os.path.isdir(path):
+                logger.info("Resolved project %r to CWD: %s", project, path)
+                return path
+            logger.warning(
+                "Project %r not found or path invalid; falling back to DEFAULT_CWD",
+                project,
+            )
+
+        if DEFAULT_CWD and os.path.isdir(DEFAULT_CWD):
+            logger.info("Using DEFAULT_CWD: %s", DEFAULT_CWD)
+            return DEFAULT_CWD
+
+        logger.info("No valid CWD resolved; SDK will use process CWD")
+        return None
 
     # ------------------------------------------------------------------
     # Cleanup helpers

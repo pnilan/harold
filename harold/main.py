@@ -9,7 +9,7 @@ load_dotenv()
 from harold.audio.listener import AudioListener
 from harold.audio.ping import play_complete_ping, play_error_ping
 from harold.audio.speaker import Speaker
-from harold.config import LOG_LEVEL
+from harold.config import LOG_LEVEL, PROJECT_PATHS
 from harold.router import Router
 from harold.router.models import (
     KillSession,
@@ -31,6 +31,9 @@ def _fallback(
     - 1 running, 0 awaiting → status
     - 0 running, 1 awaiting → send transcript as follow-up
     - Ambiguous (mixed states, multiple running/awaiting, all-error) → None
+
+    Note: Fallback cannot extract project names from transcripts (known
+    limitation). Spawned sessions will use DEFAULT_CWD.
     """
     if not registry:
         return SpawnSession(intent="spawn_session", prompt=transcript)
@@ -100,7 +103,11 @@ async def main():
 
             # 1. Classify
             registry = session_mgr.get_session_registry()
-            action = await router.classify(transcript, registry)
+            action = await router.classify(
+                transcript,
+                registry,
+                project_names=list(PROJECT_PATHS.keys()) if PROJECT_PATHS else None,
+            )
 
             # 2. Fallback if router fails
             if action is None:
@@ -116,7 +123,7 @@ async def main():
             # 3. Dispatch
             match action:
                 case SpawnSession():
-                    await session_mgr.spawn_session(action.prompt)
+                    await session_mgr.spawn_session(action.prompt, project=action.project)
                 case ReadStatus():
                     await session_mgr.read_status(action.name)
                 case ListSessions():

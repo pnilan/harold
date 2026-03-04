@@ -26,7 +26,7 @@ SYSTEM_PROMPT = (
 
 class Summarizer:
     def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(max_retries=3)
 
     async def generate_session_name(self, prompt: str) -> str:
         """Generate a 2-3 word kebab-case slug for a session prompt."""
