@@ -82,7 +82,7 @@ The project is organized in phases (tracked as feature branches):
 2. **Phase 2: SDK session manager** — Validate ClaudeSDKClient, single session, summarizer, priority pings (COMPLETE)
 3. **Phase 3: Router agent** — Haiku-based intent router (spawn/status/list/kill), multi-session registry, fuzzy name matching (COMPLETE)
 4. **Phase 4: Multi-turn sessions** — send_input intent, AWAITING_INPUT state, sessions stay alive between turns (COMPLETE)
-5. **Phase 5+** — project CWD routing, polish, error handling
+5. **Phase 5: Project CWD routing, error handling & polish** — per-project CWD routing via HAROLD_PROJECT_PATHS, audio concurrency lock, try/except in speaker/ping, logging in listener (COMPLETE)
 
 Each phase is merged via PR; check git log for completed phases.
 

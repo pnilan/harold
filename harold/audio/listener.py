@@ -1,3 +1,4 @@
+import logging
 import threading
 from collections.abc import Callable
 
@@ -18,6 +19,8 @@ from harold.config import (
     WHISPER_MODEL,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class AudioListener:
     def __init__(
@@ -33,19 +36,19 @@ class AudioListener:
         self._lock = threading.Lock()
 
         # Load models once
-        print("Loading Whisper model...")
+        logger.info("Loading Whisper model...")
         self._whisper = WhisperModel(
             WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE_TYPE
         )
-        print("Loading Silero VAD model...")
+        logger.info("Loading Silero VAD model...")
         self._vad = load_silero_vad()
         device_info = sd.query_devices(kind="input")
-        print(f"Microphone: {device_info['name']}")
-        print("Audio listener ready.")
+        logger.info("Microphone: %s", device_info['name'])
+        logger.info("Audio listener ready.")
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         if status:
-            print(f"Audio status: {status}")
+            logger.warning("Audio status: %s", status)
         self._chunks.append(indata.copy())
 
     def _start_recording(self):
@@ -90,31 +93,42 @@ class AudioListener:
         threading.Thread(target=self._process_audio, args=(chunks,), daemon=True).start()
 
     def _process_audio(self, chunks: list[np.ndarray]):
-        audio = np.concatenate(chunks, axis=0)  # shape: (N, 1)
-        audio_1d = audio.flatten()
+        try:
+            audio = np.concatenate(chunks, axis=0)  # shape: (N, 1)
+            audio_1d = audio.flatten()
+            duration = len(audio_1d) / SAMPLE_RATE
+            peak = float(np.max(np.abs(audio_1d)))
+            logger.debug("Processing audio: %.1fs, %d chunks, peak=%.4f", duration, len(chunks), peak)
 
-        # VAD: trim silence
-        audio_tensor = torch.from_numpy(audio_1d)
-        timestamps = get_speech_timestamps(audio_tensor, self._vad, sampling_rate=SAMPLE_RATE)
+            # VAD: trim silence
+            audio_tensor = torch.from_numpy(audio_1d)
+            timestamps = get_speech_timestamps(audio_tensor, self._vad, sampling_rate=SAMPLE_RATE)
 
-        if not timestamps:
-            print("No speech detected.")
-            return
+            if not timestamps:
+                logger.info("No speech detected. (duration=%.1fs, peak=%.4f)", duration, peak)
+                return
 
-        # Extract speech segments and concatenate
-        speech_parts = [audio_1d[ts["start"]:ts["end"]] for ts in timestamps]
-        speech_audio = np.concatenate(speech_parts)
+            logger.debug("VAD found %d speech segment(s)", len(timestamps))
 
-        # Transcribe
-        segments, _info = self._whisper.transcribe(
-            speech_audio,
-            beam_size=5,
-            language="en",
-        )
-        text = " ".join(seg.text.strip() for seg in segments)
+            # Extract speech segments and concatenate
+            speech_parts = [audio_1d[ts["start"]:ts["end"]] for ts in timestamps]
+            speech_audio = np.concatenate(speech_parts)
 
-        if text:
-            self.on_transcript(text)
+            # Transcribe
+            segments, _info = self._whisper.transcribe(
+                speech_audio,
+                beam_size=5,
+                language="en",
+            )
+            text = " ".join(seg.text.strip() for seg in segments)
+
+            if text:
+                logger.info("Transcribed: %s", text)
+                self.on_transcript(text)
+            else:
+                logger.info("Whisper returned empty transcription.")
+        except Exception:
+            logger.exception("Audio processing failed")
 
     def _on_press(self, key):
         if key == PUSH_TO_TALK_KEY:
@@ -129,7 +143,7 @@ class AudioListener:
             on_press=self._on_press, on_release=self._on_release
         )
         self._key_listener.start()
-        print(f"Push-to-talk active. Hold {PUSH_TO_TALK_KEY} to speak.")
+        logger.info("Push-to-talk active. Hold %s to speak.", PUSH_TO_TALK_KEY)
 
     def stop(self):
         if hasattr(self, "_key_listener"):

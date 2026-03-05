@@ -12,7 +12,7 @@ import anthropic
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from claude_agent_sdk.types import ToolUseBlock
 
-from harold.config import SUMMARIZER_MODEL
+from harold.config import SUMMARIZER_MAX_RETRIES, SUMMARIZER_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ SYSTEM_PROMPT = (
 
 class Summarizer:
     def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(max_retries=SUMMARIZER_MAX_RETRIES)
 
     async def generate_session_name(self, prompt: str) -> str:
         """Generate a 2-3 word kebab-case slug for a session prompt."""

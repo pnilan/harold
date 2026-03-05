@@ -8,6 +8,7 @@ from pydantic import BaseModel
 class SpawnSession(BaseModel):
     intent: Literal["spawn_session"]
     prompt: str
+    project: str | None = None
 
 
 class ReadStatus(BaseModel):

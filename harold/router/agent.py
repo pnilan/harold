@@ -8,7 +8,7 @@ import logging
 
 import anthropic
 
-from harold.config import ROUTER_MODEL
+from harold.config import ROUTER_MAX_RETRIES, ROUTER_MODEL
 from harold.router.models import (
     KillSession,
     ListSessions,
@@ -30,9 +30,14 @@ filler words, or imprecise language. Interpret the user's likely intention.
 Active sessions:
 {session_list}
 
+{project_list}
+
 Intent rules:
 1. spawn_session — User wants to start a new coding task. Extract a clean
-   task prompt from the transcript.
+   task prompt from the transcript. If the user mentions a known project by
+   name, set the "project" field to that project name (lowercase). If no
+   project is mentioned or the name doesn't match a known project, set
+   "project" to null.
 2. read_status — User wants a progress/result update on a session. Match
    the session name from the active sessions list. If only one session exists,
    assume that one.
@@ -75,6 +80,10 @@ ROUTE_TOOL = {
                 "type": "string",
                 "description": "For send_input: the follow-up instruction.",
             },
+            "project": {
+                "type": ["string", "null"],
+                "description": "For spawn_session: the project name if mentioned.",
+            },
         },
         "required": ["intent"],
     },
@@ -93,12 +102,13 @@ class Router:
     """Classifies voice transcripts into structured intents via Haiku."""
 
     def __init__(self) -> None:
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(max_retries=ROUTER_MAX_RETRIES)
 
     async def classify(
         self,
         transcript: str,
         session_registry: list[dict[str, str]],
+        project_names: list[str] | None = None,
     ) -> RouterOutput | None:
         """Classify a transcript into one of 5 intents.
 
@@ -112,7 +122,17 @@ class Router:
                 for s in session_registry
             )
 
-        system_prompt = SYSTEM_TEMPLATE.format(session_list=session_list)
+        if project_names:
+            project_list = "Known projects:\n" + "\n".join(
+                f"  - {name}" for name in project_names
+            )
+        else:
+            project_list = ""
+
+        system_prompt = SYSTEM_TEMPLATE.format(
+            session_list=session_list,
+            project_list=project_list,
+        )
 
         try:
             response = await self._client.messages.create(
